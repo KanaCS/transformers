@@ -205,7 +205,6 @@ class Attention(nn.Module):
     def forward(
         self,
         hidden_states,
-        layer_past=None,
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
@@ -524,6 +523,49 @@ DEPARALLELIZE_DOCSTRING = r"""
         model.deparallelize() # Put the model back on cpu and cleans memory by calling torch.cuda.empty_cache()
 """
 
+# TODO sleepy
+class GPT2Embeddings(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+        self.wpe = nn.Embedding(config.n_positions, config.n_embd)
+        self.emb3 = nn.Embedding(config.emb3_size, config.n_embd)
+        self.emb4 = nn.Embedding(config.emb4_size, config.n_embd)
+        # token type embedding also -> wte
+        self.drop = nn.Dropout(config.embd_pdrop)
+        # layer norm is in the robertamodel 
+        
+        
+    def forward(
+        self, input_ids=None, token_type_ids=None, position_ids=None, emb3_ids=None, emb4_ids=None, inputs_embeds=None
+    ):
+    # some processing of forward input is done on Model class (not necessary to move here i think?)
+        # tok emb + pos emb
+        if inputs_embeds is None:
+            inputs_embeds = self.wte(input_ids)
+        position_embeds = self.wpe(position_ids)
+        hidden_states = inputs_embeds + position_embeds
+
+        # tok type emb
+        if token_type_ids is not None:
+            token_type_embeds = self.wte(token_type_ids)
+            hidden_states = hidden_states + token_type_embeds
+
+        # third emb
+        if emb3_ids is not None:
+            emb3_embeds = self.emb3(emb3_ids)
+            hidden_states = hidden_states + emb3_embeds
+        
+        # fourth emb
+        if emb4_ids is not None:
+            emb4_embeds = self.emb4(emb4_ids)
+            hidden_states = hidden_states + emb4_embeds
+        
+        # fith emb
+        # dropout    
+        hidden_states = self.drop(hidden_states)
+        return hidden_states
+
 
 @add_start_docstrings(
     "The bare GPT2 Model transformer outputting raw hidden-states without any specific head on top.",
@@ -532,10 +574,14 @@ DEPARALLELIZE_DOCSTRING = r"""
 class GPT2Model(GPT2PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
-
-        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
-        self.wpe = nn.Embedding(config.n_positions, config.n_embd)
-        self.drop = nn.Dropout(config.embd_pdrop)
+#         # TO REMOVE
+#         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+#         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
+#         self.drop = nn.Dropout(config.embd_pdrop)
+#         # TO REMOVE
+        # NEW
+        self.word_embeddings = GPT2Embeddings(config)
+        # NEW
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
@@ -543,7 +589,7 @@ class GPT2Model(GPT2PreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
-
+        
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         # Check validity of device_map
@@ -554,8 +600,11 @@ class GPT2Model(GPT2PreTrainedModel):
         self.model_parallel = True
         self.first_device = "cpu" if "cpu" in self.device_map.keys() else "cuda:" + str(min(self.device_map.keys()))
         self.last_device = "cuda:" + str(max(self.device_map.keys()))
-        self.wte = self.wte.to(self.first_device)
-        self.wpe = self.wpe.to(self.first_device)
+#         # TO REMOVE
+#         self.wte = self.wte.to(self.first_device)
+#         self.wpe = self.wpe.to(self.first_device)
+#         # TO REMOVE
+        self.embeddings = self.embeddings.to(self.first_device)
         # Load onto devices
         for k, v in self.device_map.items():
             for block in v:
@@ -570,19 +619,30 @@ class GPT2Model(GPT2PreTrainedModel):
         self.device_map = None
         self.first_device = "cpu"
         self.last_device = "cpu"
-        self.wte = self.wte.to("cpu")
-        self.wpe = self.wpe.to("cpu")
+#         # TO REMOVE
+#         self.wte = self.wte.to("cpu")
+#         self.wpe = self.wpe.to("cpu")
+#         # TO REMOVE
+        self.embeddings = self.embeddings.to("cpu")
         for index in range(len(self.h)):
             self.h[index] = self.h[index].to("cpu")
         self.ln_f = self.ln_f.to("cpu")
         torch.cuda.empty_cache()
+#     # TO REMOVE
+#     def get_input_embeddings(self):
+#         return self.wte
+#     # TO REMOVE
+#     def set_input_embeddings(self, new_embeddings):
+#         self.wte = new_embeddings
 
+    # NEW
     def get_input_embeddings(self):
-        return self.wte
+        return self.embeddings.wte
 
-    def set_input_embeddings(self, new_embeddings):
-        self.wte = new_embeddings
-
+    def set_input_embeddings(self, value):
+        self.embeddings.wte = value
+    # NEW
+    
     def _prune_heads(self, heads_to_prune):
         """
         Prunes heads of the model. heads_to_prune: dict of {layer_num: list of heads to prune in this layer}
@@ -597,13 +657,15 @@ class GPT2Model(GPT2PreTrainedModel):
         output_type=BaseModelOutputWithPastAndCrossAttentions,
         config_class=_CONFIG_FOR_DOC,
     )
-    def forward(
+    def forward( 
         self,
         input_ids=None,
-        past_key_values=None,
+        past_key_values=None, 
         attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
+        token_type_ids=None, 
+        position_ids=None, 
+        emb3_ids=None,
+        emb4_ids=None,
         head_mask=None,
         inputs_embeds=None,
         encoder_hidden_states=None,
@@ -631,7 +693,7 @@ class GPT2Model(GPT2PreTrainedModel):
             batch_size = inputs_embeds.shape[0]
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
-
+            
         if token_type_ids is not None:
             token_type_ids = token_type_ids.view(-1, input_shape[-1])
         if position_ids is not None:
@@ -682,20 +744,33 @@ class GPT2Model(GPT2PreTrainedModel):
         # attention_probs has shape bsz x n_heads x N x N
         # head_mask has shape n_layer x batch x n_heads x N x N
         head_mask = self.get_head_mask(head_mask, self.config.n_layer)
+        
+#         # TO REMOVE
+#         if inputs_embeds is None:
+#             inputs_embeds = self.wte(input_ids)
+#         position_embeds = self.wpe(position_ids)
+#         hidden_states = inputs_embeds + position_embeds
 
-        if inputs_embeds is None:
-            inputs_embeds = self.wte(input_ids)
-        position_embeds = self.wpe(position_ids)
-        hidden_states = inputs_embeds + position_embeds
+#         if token_type_ids is not None:
+#             token_type_embeds = self.wte(token_type_ids)
+#             hidden_states = hidden_states + token_type_embeds
+#
+#         hidden_states = self.drop(hidden_states)
+#         # TO REMOVE
 
-        if token_type_ids is not None:
-            token_type_embeds = self.wte(token_type_ids)
-            hidden_states = hidden_states + token_type_embeds
-
-        hidden_states = self.drop(hidden_states)
-
+        # NEW    
+        hidden_states = self.embeddings(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            emb3_ids=emb3_ids,
+            emb4_ids=emb4_ids,
+            token_type_ids=token_type_ids,
+            inputs_embeds=inputs_embeds,
+        )
+        # NEW    
+       
         output_shape = input_shape + (hidden_states.size(-1),)
-
+        
         presents = () if use_cache else None
         all_self_attentions = () if output_attentions else None
         all_cross_attentions = () if output_attentions and self.config.add_cross_attention else None
