@@ -523,7 +523,7 @@ DEPARALLELIZE_DOCSTRING = r"""
         model.deparallelize() # Put the model back on cpu and cleans memory by calling torch.cuda.empty_cache()
 """
 
-# TODO sleepy
+# TODO hahaaa
 class GPT2Embeddings(nn.Module):
     def __init__(self, config):
         super().__init__()
