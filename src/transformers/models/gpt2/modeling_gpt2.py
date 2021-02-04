@@ -579,9 +579,6 @@ class GPT2Model(GPT2PreTrainedModel):
 #         self.wpe = nn.Embedding(config.n_positions, config.n_embd)
 #         self.drop = nn.Dropout(config.embd_pdrop)
 #         # TO REMOVE
-        # NEW
-        self.word_embeddings = GPT2Embeddings(config)
-        # NEW
         self.h = nn.ModuleList([Block(config.n_ctx, config, scale=True) for _ in range(config.n_layer)])
         self.ln_f = nn.LayerNorm(config.n_embd, eps=config.layer_norm_epsilon)
 
@@ -589,7 +586,10 @@ class GPT2Model(GPT2PreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
-        
+        # NEW
+        self.embeddings = GPT2Embeddings(config)
+        # NEW
+                
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         # Check validity of device_map
